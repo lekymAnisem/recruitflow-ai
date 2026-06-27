@@ -100,12 +100,33 @@ pipeline {
                 }
             }
         }
-        stage('Deploy to Docker Containers') {
+        stage('Deploy to EKS Cluster') {
             steps {
-                sh '''
-                    docker run -d --name recruitflow-backend -p 5000:5000 dracoo23/recruitflow-backend:latest
-                    docker run -d --name recruitflow-frontend -p 5173:80 dracoo23/recruitflow-frontend:latest
-                '''
+                dir('infra/k8s') {
+                    script {
+                        sh '''
+                            echo "Verifying AWS credentials..."
+                            aws sts get-caller-identity
+
+                            echo "Configuring kubectl for EKS cluster..."
+                            aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
+
+                            echo "Verifying kubeconfig..."
+                            kubectl config view
+
+                            echo "Deploying backend & frontend to EKS..."
+                            kubectl apply -f backend-deployment.yaml
+                            kubectl apply -f backend-service.yaml
+                            kubectl apply -f frontend-deployment.yaml
+                            kubectl apply -f frontend-service.yaml
+                            kubectl apply -f configmap.yaml
+
+                            echo "Verifying deployment..."
+                            kubectl get pods
+                            kubectl get svc
+                        '''
+                    }
+                }
             }
         }
     }
