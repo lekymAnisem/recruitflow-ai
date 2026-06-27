@@ -1,0 +1,66 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
+import express from 'express';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import path from 'path';
+
+import { config } from './config';
+import { errorHandler } from './middleware/errorHandler';
+import authRoutes from './modules/auth/auth.routes';
+import usersRoutes from './modules/users/users.routes';
+import organizationsRoutes from './modules/organizations/organizations.routes';
+import dashboardRoutes from './modules/dashboard/dashboard.routes';
+import jobsRoutes from './modules/jobs/jobs.routes';
+import candidatesRoutes from './modules/candidates/candidates.routes';
+import resumesRoutes from './modules/resumes/resumes.routes';
+import applicationsRoutes from './modules/applications/applications.routes';
+import notesRoutes from './modules/notes/notes.routes';
+import tagsRoutes from './modules/tags/tags.routes';
+import aiRoutes from './modules/ai/ai.routes';
+
+const app = express();
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`Origin ${origin} not allowed by CORS`));
+      }
+    },
+    credentials: true,
+  }),
+);
+
+app.use(cookieParser());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+const uploadsPath = path.resolve(__dirname, '..', config.uploadDir);
+app.use('/uploads', express.static(uploadsPath));
+
+app.use('/api/auth', authRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/organizations', organizationsRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/jobs', jobsRoutes);
+app.use('/api/candidates', candidatesRoutes);
+app.use('/api/resumes', resumesRoutes);
+app.use('/api/applications', applicationsRoutes);
+app.use('/api/notes', notesRoutes);
+app.use('/api/tags', tagsRoutes);
+app.use('/api/ai', aiRoutes);
+
+app.use((_req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found',
+  });
+});
+
+app.use(errorHandler);
+
+export default app;

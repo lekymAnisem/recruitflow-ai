@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: recruitflow-frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: recruitflow-frontend
+  ports:
+    - port: 80
+      targetPort: 80
