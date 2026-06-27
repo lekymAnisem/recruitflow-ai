@@ -6,7 +6,14 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
+
+# ✅ ADD THIS (IMPORTANT)
+ARG VITE_API_URL
+ENV VITE_API_URL=$VITE_API_URL
+
+# build must happen AFTER env is set
 RUN npm run build
+
 
 FROM nginx:alpine
 
