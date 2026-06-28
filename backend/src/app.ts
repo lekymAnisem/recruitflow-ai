@@ -25,7 +25,7 @@ const app = express();
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
+      if (!origin || /^https?:\/\/(localhost|13\.211\.245\.10)(:\d+)?$/.test(origin)) {
         callback(null, true);
       } else {
         callback(new Error(`Origin ${origin} not allowed by CORS`));
