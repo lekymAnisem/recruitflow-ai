@@ -1,5 +1,6 @@
 terraform {
   required_version = ">= 1.5"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -13,14 +14,9 @@ provider "aws" {
 }
 
 data "aws_caller_identity" "current" {}
-data "aws_ami" "amazon_linux_2" {
-  most_recent = true
-  owners      = ["amazon"]
 
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
 locals {
@@ -32,18 +28,15 @@ locals {
     ManagedBy   = "terraform"
   }
 
-  backend_port   = 5000
-  frontend_port  = 80
-  sonarqube_port = 9000
-  prometheus_port = 9090
-  grafana_port   = 3000
-
-  backend_repo  = aws_ecr_repository.backend.repository_url
-  frontend_repo = aws_ecr_repository.frontend.repository_url
+  jenkins_port      = 8080
+  sonarqube_port    = 9000
+  prometheus_port   = 9090
+  grafana_port      = 3000
+  alertmanager_port = 9093
 }
 
 # ---------------------------------------------------------------------------
-# VPC
+# Network
 # ---------------------------------------------------------------------------
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -60,12 +53,18 @@ resource "aws_internet_gateway" "main" {
 }
 
 resource "aws_subnet" "public" {
+  count = length(var.public_subnet_cidrs)
+
   vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidr
-  availability_zone       = var.availability_zone
+  cidr_block              = var.public_subnet_cidrs[count.index]
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-public" })
+  tags = merge(local.common_tags, {
+    Name                                             = "${local.name_prefix}-public-${count.index + 1}"
+    "kubernetes.io/role/elb"                         = "1"
+    "kubernetes.io/cluster/${local.name_prefix}-eks" = "shared"
+  })
 }
 
 resource "aws_route_table" "public" {
@@ -80,64 +79,42 @@ resource "aws_route_table" "public" {
 }
 
 resource "aws_route_table_association" "public" {
-  subnet_id      = aws_subnet.public.id
+  count = length(aws_subnet.public)
+
+  subnet_id      = aws_subnet.public[count.index].id
   route_table_id = aws_route_table.public.id
 }
 
 # ---------------------------------------------------------------------------
-# Security Group
+# Security Groups
 # ---------------------------------------------------------------------------
-resource "aws_security_group" "main" {
-  name        = "${local.name_prefix}-sg"
-  description = "Security group for the EC2 instance"
+resource "aws_security_group" "cicd" {
+  name        = "${local.name_prefix}-cicd-sg"
+  description = "CI/CD server access for Jenkins, SonarQube, Docker, kubectl, and Helm"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Backend API"
-    from_port   = 5000
-    to_port     = 5000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "SonarQube"
-    from_port   = 9000
-    to_port     = 9000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Prometheus"
-    from_port   = 9090
-    to_port     = 9090
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    description = "Grafana"
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
 
   ingress {
     description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = var.admin_allowed_cidr_blocks
+  }
+
+  ingress {
+    description = "Jenkins"
+    from_port   = local.jenkins_port
+    to_port     = local.jenkins_port
+    protocol    = "tcp"
+    cidr_blocks = var.cicd_allowed_cidr_blocks
+  }
+
+  ingress {
+    description = "SonarQube"
+    from_port   = local.sonarqube_port
+    to_port     = local.sonarqube_port
+    protocol    = "tcp"
+    cidr_blocks = var.cicd_allowed_cidr_blocks
   }
 
   egress {
@@ -147,19 +124,70 @@ resource "aws_security_group" "main" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-sg" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-cicd-sg" })
+}
+
+resource "aws_security_group" "monitoring" {
+  name        = "${local.name_prefix}-monitoring-sg"
+  description = "Monitoring server access for Prometheus, Grafana, and Alertmanager"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = var.admin_allowed_cidr_blocks
+  }
+
+  ingress {
+    description = "Grafana"
+    from_port   = local.grafana_port
+    to_port     = local.grafana_port
+    protocol    = "tcp"
+    cidr_blocks = var.monitoring_allowed_cidr_blocks
+  }
+
+  ingress {
+    description = "Prometheus"
+    from_port   = local.prometheus_port
+    to_port     = local.prometheus_port
+    protocol    = "tcp"
+    cidr_blocks = var.monitoring_allowed_cidr_blocks
+  }
+
+  dynamic "ingress" {
+    for_each = var.alertmanager_enabled ? [1] : []
+
+    content {
+      description = "Alertmanager"
+      from_port   = local.alertmanager_port
+      to_port     = local.alertmanager_port
+      protocol    = "tcp"
+      cidr_blocks = var.monitoring_allowed_cidr_blocks
+    }
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-monitoring-sg" })
 }
 
 # ---------------------------------------------------------------------------
-# IAM Role for EC2
+# IAM for EC2 CI/CD server
 # ---------------------------------------------------------------------------
-resource "aws_iam_role" "ec2" {
-  name = "${local.name_prefix}-ec2-role"
+resource "aws_iam_role" "cicd" {
+  name = "${local.name_prefix}-cicd-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "ec2.amazonaws.com" }
       Action    = "sts:AssumeRole"
     }]
@@ -168,83 +196,113 @@ resource "aws_iam_role" "ec2" {
   tags = local.common_tags
 }
 
-resource "aws_iam_role_policy_attachment" "ec2_ssm" {
-  role       = aws_iam_role.ec2.name
+resource "aws_iam_role_policy_attachment" "cicd_ssm" {
+  role       = aws_iam_role.cicd.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_iam_role_policy" "ec2_secrets" {
-  name = "${local.name_prefix}-ec2-secrets-policy"
-  role = aws_iam_role.ec2.name
+resource "aws_iam_role_policy_attachment" "cicd_ecr" {
+  role       = aws_iam_role.cicd.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPowerUser"
+}
+
+resource "aws_iam_role_policy" "cicd_eks" {
+  name = "${local.name_prefix}-cicd-eks-policy"
+  role = aws_iam_role.cicd.name
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect = "Allow"
       Action = [
-        "ssm:GetParameter",
-        "ssm:GetParameters"
+        "eks:DescribeCluster",
+        "eks:ListClusters",
+        "sts:GetCallerIdentity"
       ]
-      Resource = ["arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/${local.name_prefix}/*"]
+      Resource = "*"
     }]
   })
 }
 
-resource "aws_iam_role_policy" "ec2_ecr" {
-  name = "${local.name_prefix}-ec2-ecr-policy"
-  role = aws_iam_role.ec2.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage"
-      ]
-      Resource = ["*"]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy" "ec2_s3" {
-  name = "${local.name_prefix}-ec2-s3-policy"
-  role = aws_iam_role.ec2.name
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:PutObject",
-        "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ]
-      Resource = [
-        "arn:aws:s3:::${local.name_prefix}-uploads",
-        "arn:aws:s3:::${local.name_prefix}-uploads/*"
-      ]
-    }]
-  })
-}
-
-resource "aws_iam_instance_profile" "main" {
-  name = "${local.name_prefix}-instance-profile"
-  role = aws_iam_role.ec2.name
+resource "aws_iam_instance_profile" "cicd" {
+  name = "${local.name_prefix}-cicd-instance-profile"
+  role = aws_iam_role.cicd.name
 
   tags = local.common_tags
 }
 
 # ---------------------------------------------------------------------------
-# ECR Repositories
+# IAM for EKS
+# ---------------------------------------------------------------------------
+resource "aws_iam_role" "eks_cluster" {
+  count = var.eks_enabled ? 1 : 0
+
+  name = "${local.name_prefix}-eks-cluster-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "eks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster" {
+  count = var.eks_enabled ? 1 : 0
+
+  role       = aws_iam_role.eks_cluster[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+resource "aws_iam_role" "eks_nodes" {
+  count = var.eks_enabled ? 1 : 0
+
+  name = "${local.name_prefix}-eks-node-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = local.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_worker" {
+  count = var.eks_enabled ? 1 : 0
+
+  role       = aws_iam_role.eks_nodes[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_cni" {
+  count = var.eks_enabled ? 1 : 0
+
+  role       = aws_iam_role.eks_nodes[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "eks_nodes_ecr" {
+  count = var.eks_enabled ? 1 : 0
+
+  role       = aws_iam_role.eks_nodes[0].name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+# ---------------------------------------------------------------------------
+# ECR repositories for Kubernetes workloads
 # ---------------------------------------------------------------------------
 resource "aws_ecr_repository" "backend" {
   name                 = "${local.name_prefix}-backend"
   image_tag_mutability = "MUTABLE"
-  force_delete         = true
+  force_delete         = var.ecr_force_delete
 
   image_scanning_configuration {
     scan_on_push = true
@@ -256,7 +314,7 @@ resource "aws_ecr_repository" "backend" {
 resource "aws_ecr_repository" "frontend" {
   name                 = "${local.name_prefix}-frontend"
   image_tag_mutability = "MUTABLE"
-  force_delete         = true
+  force_delete         = var.ecr_force_delete
 
   image_scanning_configuration {
     scan_on_push = true
@@ -266,111 +324,165 @@ resource "aws_ecr_repository" "frontend" {
 }
 
 # ---------------------------------------------------------------------------
-# S3 Bucket for Uploads
+# EC2 servers
 # ---------------------------------------------------------------------------
-resource "aws_s3_bucket" "uploads" {
-  bucket = "${local.name_prefix}-uploads"
-  tags   = local.common_tags
-}
-
-resource "aws_s3_bucket_public_access_block" "uploads" {
-  bucket = aws_s3_bucket.uploads.id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
-}
-
-# ---------------------------------------------------------------------------
-# SSM Parameters for Secrets
-# ---------------------------------------------------------------------------
-resource "aws_ssm_parameter" "mongodb_uri" {
-  name  = "/${local.name_prefix}/mongodb-uri"
-  type  = "SecureString"
-  value = var.mongodb_uri
-  tags  = local.common_tags
-}
-
-resource "aws_ssm_parameter" "jwt_secret" {
-  name  = "/${local.name_prefix}/jwt-secret"
-  type  = "SecureString"
-  value = var.jwt_secret
-  tags  = local.common_tags
-}
-
-resource "aws_ssm_parameter" "openai_api_key" {
-  count = var.openai_api_key != "" ? 1 : 0
-  name  = "/${local.name_prefix}/openai-api-key"
-  type  = "SecureString"
-  value = var.openai_api_key
-  tags  = local.common_tags
-}
-
-# ---------------------------------------------------------------------------
-# Elastic IP
-# ---------------------------------------------------------------------------
-resource "aws_eip" "main" {
+resource "aws_eip" "cicd" {
   domain = "vpc"
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-eip" })
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-cicd-eip" })
 }
 
-resource "aws_eip_association" "main" {
-  instance_id   = aws_instance.main.id
-  allocation_id = aws_eip.main.id
+resource "aws_eip" "monitoring" {
+  domain = "vpc"
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-monitoring-eip" })
 }
 
-# ---------------------------------------------------------------------------
-# EC2 Instance + User Data
-# ---------------------------------------------------------------------------
-resource "aws_instance" "main" {
-  ami                    = data.aws_ami.amazon_linux_2.id
-  instance_type          = var.instance_type
-  subnet_id              = aws_subnet.public.id
-  vpc_security_group_ids = [aws_security_group.main.id]
+resource "aws_instance" "cicd" {
+  ami                    = var.ubuntu_ami_id
+  instance_type          = var.cicd_instance_type
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.cicd.id]
   key_name               = var.ssh_key_name != "" ? var.ssh_key_name : null
-  iam_instance_profile   = aws_iam_instance_profile.main.name
+  iam_instance_profile   = aws_iam_instance_profile.cicd.name
 
   user_data = templatefile("${path.module}/user-data.sh", {
-    aws_region      = var.aws_region
-    aws_account_id  = data.aws_caller_identity.current.account_id
-    name_prefix     = local.name_prefix
-    backend_port    = local.backend_port
-    frontend_port   = local.frontend_port
-    sonarqube_port  = local.sonarqube_port
-    prometheus_port = local.prometheus_port
-    grafana_port    = local.grafana_port
-    environment     = var.environment
-    s3_bucket       = aws_s3_bucket.uploads.id
-    backend_image   = local.backend_repo
-    frontend_image  = local.frontend_repo
-    openai_enabled  = var.openai_api_key != ""
+    aws_region        = var.aws_region
+    eks_enabled       = var.eks_enabled
+    eks_cluster_name  = var.eks_enabled ? aws_eks_cluster.main[0].name : ""
+    jenkins_port      = local.jenkins_port
+    sonarqube_port    = local.sonarqube_port
     sonarqube_enabled = var.sonarqube_enabled
-    prometheus_enabled = var.prometheus_enabled
-    grafana_enabled    = var.grafana_enabled
-    grafana_admin_pass = var.grafana_admin_password
   })
 
   user_data_replace_on_change = true
 
-  tags = merge(local.common_tags, { Name = "${local.name_prefix}-instance" })
+  root_block_device {
+    volume_size           = var.cicd_root_volume_size
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-cicd" })
+}
+
+resource "aws_eip_association" "cicd" {
+  instance_id   = aws_instance.cicd.id
+  allocation_id = aws_eip.cicd.id
+}
+
+resource "aws_instance" "monitoring" {
+  ami                    = var.ubuntu_ami_id
+  instance_type          = var.monitoring_instance_type
+  subnet_id              = aws_subnet.public[0].id
+  vpc_security_group_ids = [aws_security_group.monitoring.id]
+  key_name               = var.ssh_key_name != "" ? var.ssh_key_name : null
+
+  user_data = templatefile("${path.module}/monitoring-user-data.sh", {
+    prometheus_enabled   = var.prometheus_enabled
+    prometheus_version   = var.prometheus_version
+    prometheus_port      = local.prometheus_port
+    grafana_enabled      = var.grafana_enabled
+    grafana_port         = local.grafana_port
+    grafana_admin_pass   = var.grafana_admin_password
+    alertmanager_enabled = var.alertmanager_enabled
+    alertmanager_version = var.alertmanager_version
+    alertmanager_port    = local.alertmanager_port
+  })
+
+  user_data_replace_on_change = true
+
+  root_block_device {
+    volume_size           = var.monitoring_root_volume_size
+    volume_type           = "gp3"
+    delete_on_termination = true
+  }
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-monitoring" })
+}
+
+resource "aws_eip_association" "monitoring" {
+  instance_id   = aws_instance.monitoring.id
+  allocation_id = aws_eip.monitoring.id
 }
 
 # ---------------------------------------------------------------------------
-# Route53 (optional)
+# EKS cluster and worker nodes
 # ---------------------------------------------------------------------------
-data "aws_route53_zone" "main" {
-  count = var.domain_name != "" ? 1 : 0
-  name  = var.domain_name
+resource "aws_eks_cluster" "main" {
+  count = var.eks_enabled ? 1 : 0
+
+  name     = "${local.name_prefix}-eks"
+  role_arn = aws_iam_role.eks_cluster[0].arn
+  version  = var.eks_version
+
+  access_config {
+    authentication_mode                         = "API_AND_CONFIG_MAP"
+    bootstrap_cluster_creator_admin_permissions = true
+  }
+
+  vpc_config {
+    endpoint_private_access = true
+    endpoint_public_access  = true
+    public_access_cidrs     = var.eks_public_access_cidr_blocks
+    subnet_ids              = aws_subnet.public[*].id
+  }
+
+  depends_on = [aws_iam_role_policy_attachment.eks_cluster]
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-eks" })
 }
 
-resource "aws_route53_record" "app" {
-  count   = var.domain_name != "" ? 1 : 0
-  zone_id = data.aws_route53_zone.main[0].zone_id
-  name    = var.domain_name
-  type    = "A"
+resource "aws_eks_node_group" "main" {
+  count = var.eks_enabled ? 1 : 0
 
-  ttl  = 300
-  records = [aws_eip.main.public_ip]
+  cluster_name    = aws_eks_cluster.main[0].name
+  node_group_name = "${local.name_prefix}-workers"
+  node_role_arn   = aws_iam_role.eks_nodes[0].arn
+  subnet_ids      = aws_subnet.public[*].id
+
+  ami_type       = "AL2_x86_64"
+  capacity_type  = var.eks_node_capacity_type
+  disk_size      = var.eks_node_disk_size
+  instance_types = var.eks_node_instance_types
+
+  scaling_config {
+    desired_size = var.eks_node_desired_size
+    max_size     = var.eks_node_max_size
+    min_size     = var.eks_node_min_size
+  }
+
+  labels = {
+    workload = "backend-frontend"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_nodes_worker,
+    aws_iam_role_policy_attachment.eks_nodes_cni,
+    aws_iam_role_policy_attachment.eks_nodes_ecr
+  ]
+
+  tags = merge(local.common_tags, { Name = "${local.name_prefix}-workers" })
+}
+
+resource "aws_eks_access_entry" "cicd" {
+  count = var.eks_enabled ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.main[0].name
+  principal_arn = aws_iam_role.cicd.arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "cicd_admin" {
+  count = var.eks_enabled ? 1 : 0
+
+  cluster_name  = aws_eks_cluster.main[0].name
+  principal_arn = aws_iam_role.cicd.arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.cicd]
 }
