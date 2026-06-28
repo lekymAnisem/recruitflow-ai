@@ -42,6 +42,10 @@ app.use(express.urlencoded({ extended: true }));
 const uploadsPath = path.resolve(__dirname, '..', config.uploadDir);
 app.use('/uploads', express.static(uploadsPath));
 
+app.get('/api/health', (_req, res) => {
+  res.json({ success: true, message: 'OK' });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/organizations', organizationsRoutes);
