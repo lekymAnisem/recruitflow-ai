@@ -73,13 +73,13 @@ variable "cicd_root_volume_size" {
 variable "monitoring_instance_type" {
   description = "EC2 instance type for Server 2, the monitoring server"
   type        = string
-  default     = "t3.medium"
+  default     = "c7i-flex.large"
 }
 
 variable "monitoring_root_volume_size" {
   description = "Root EBS volume size in GB for Server 2, the monitoring server"
   type        = number
-  default     = 20
+  default     = 8
 }
 
 variable "sonarqube_enabled" {
