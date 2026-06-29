@@ -43,7 +43,7 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 script {
-                    waitForQualityGate abortPipeline: false
+                    waitForQualityGate abortPipeline: false, credentialsId: 'SonarQube'
                 }
             }
         }
@@ -148,7 +148,7 @@ pipeline {
                             aws sts get-caller-identity
 
                             echo "Configuring kubectl for EKS cluster..."
-                            aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
+                            aws eks update-kubeconfig --region ap-southeast-2 --name recruitflow-production-eks
 
                             
                             echo "Replacing image placeholders..."
