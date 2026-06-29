@@ -163,12 +163,22 @@ pipeline {
                             sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${BACKEND_IMAGE}|g" backend-deployment.yaml
                             sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${FRONTEND_IMAGE}|g" frontend-deployment.yaml
 
+                            echo "Applying ConfigMap..."
+                            kubectl apply -f configmap.yaml
+
+                            echo "Creating/updating K8s secrets from Jenkins credentials..."
+                            kubectl create secret generic recruitflow-secrets \
+                                --namespace recruitflow \
+                                --from-literal=MONGO_URI="${MONGO_URI}" \
+                                --from-literal=JWT_SECRET="${JWT_SECRET}" \
+                                --from-literal=AWS_S3_BUCKET_NAME="${AWS_S3_BUCKET_NAME}" \
+                                --dry-run=client -o yaml | kubectl apply -f -
+
                             echo "Deploying application to EKS..."
                             kubectl apply -f backend-deployment.yaml
                             kubectl apply -f backend-service.yaml
                             kubectl apply -f frontend-deployment.yaml
                             kubectl apply -f frontend-service.yaml
-                            kubectl apply -f configmap.yaml
 
                             kubectl rollout status deployment/recruitflow-backend --timeout=180s
                             kubectl rollout status deployment/recruitflow-frontend --timeout=180s
