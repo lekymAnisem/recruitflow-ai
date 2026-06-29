@@ -7,13 +7,16 @@ pipeline {
     }
 
     environment {
+        AWS_REGION = 'ap-southeast-2'
+        APP_NAME = 'recruitflow'
+        ENVIRONMENT_NAME = 'production'
+        EKS_CLUSTER_NAME = 'recruitflow-production-eks'
+        BACKEND_REPO = 'recruitflow-production-backend'
+        FRONTEND_REPO = 'recruitflow-production-frontend'
         SCANNER_HOME = tool 'sonar-scanner'
-        DOCKER_IMAGE_BACKEND = "dracoo23/recruitflow-backend"
-        DOCKER_IMAGE_FRONTEND = "dracoo23/recruitflow-frontend"
     }
 
     stages {
-
         stage('Clean Workspace') {
             steps {
                 cleanWs()
@@ -31,11 +34,11 @@ pipeline {
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
-                    sh """
+                    sh '''
                         $SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectKey=recruitflow-ai \
-                        -Dsonar.projectName=recruitflow-ai
-                    """
+                          -Dsonar.projectKey=recruitflow-ai \
+                          -Dsonar.projectName=recruitflow-ai
+                    '''
                 }
             }
         }
@@ -68,78 +71,81 @@ pipeline {
             }
         }
 
+        stage('TypeScript Check') {
+            parallel {
+                stage('Backend') {
+                    steps {
+                        dir('backend') {
+                            sh 'npm run typecheck'
+                        }
+                    }
+                }
+                stage('Frontend') {
+                    steps {
+                        dir('frontend') {
+                            sh 'npx tsc -b --noEmit'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                dir('backend') {
+                    sh 'npm test'
+                }
+            }
+        }
+
         stage('Trivy FS Scan') {
             steps {
                 sh 'trivy fs . --format table > trivy-fs.txt || true'
             }
         }
 
-        stage('Docker Build & Push') {
-            environment {
-                DOCKER_CREDENTIALS = credentials('docker')
-            }
+        stage('Build & Push Images to ECR') {
             steps {
-                sh "docker login -u $DOCKER_CREDENTIALS_USR -p $DOCKER_CREDENTIALS_PSW"
+                sh '''
+                    set -e
 
-                dir('backend') {
-                    sh """
-                        docker build -t ${DOCKER_IMAGE_BACKEND}:latest .
-                        docker push ${DOCKER_IMAGE_BACKEND}:latest
-                    """
-                }
-                dir('frontend') {
-                     sh "docker build -t ${DOCKER_IMAGE_FRONTEND}:latest ."
+                    AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+                    ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+                    BACKEND_IMAGE="${ECR_REGISTRY}/${BACKEND_REPO}:${BUILD_NUMBER}"
+                    FRONTEND_IMAGE="${ECR_REGISTRY}/${FRONTEND_REPO}:${BUILD_NUMBER}"
 
+                    aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
+                    docker build -t "${BACKEND_IMAGE}" -t "${ECR_REGISTRY}/${BACKEND_REPO}:latest" backend
+                    docker build -t "${FRONTEND_IMAGE}" -t "${ECR_REGISTRY}/${FRONTEND_REPO}:latest" frontend
 
-                }
+                    docker push "${BACKEND_IMAGE}"
+                    docker push "${ECR_REGISTRY}/${BACKEND_REPO}:latest"
+                    docker push "${FRONTEND_IMAGE}"
+                    docker push "${ECR_REGISTRY}/${FRONTEND_REPO}:latest"
+
+                    printf 'BACKEND_IMAGE=%s\\nFRONTEND_IMAGE=%s\\n' "${BACKEND_IMAGE}" "${FRONTEND_IMAGE}" > image.env
+                '''
             }
         }
 
         stage('Trivy Image Scan') {
             steps {
-                sh """
-                    trivy image ${DOCKER_IMAGE_BACKEND}:latest > trivy-backend.txt || true
-                    trivy image ${DOCKER_IMAGE_FRONTEND}:latest > trivy-frontend.txt || true
-                """
+                sh '''
+                    set -e
+                    . ./image.env
+                    trivy image "${BACKEND_IMAGE}" > trivy-backend.txt || true
+                    trivy image "${FRONTEND_IMAGE}" > trivy-frontend.txt || true
+                '''
             }
         }
 
-        stage('Deploy Containers') {
+        stage('Deploy to EKS') {
             environment {
                 MONGO_URI = credentials('mongo-uri')
-                AWS_ACCESS_KEY_ID = credentials('aws-access-key')
-                AWS_SECRET_ACCESS_KEY = credentials('aws-secret-key')
-                AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket')
                 JWT_SECRET = credentials('jwt-secret')
+                AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket')
             }
-            steps {
-                sh """
-                    docker rm -f recruitflow-backend || true
-                    docker rm -f recruitflow-frontend || true
-
-                    docker run -d --name recruitflow-backend \
-                        -p 5000:5000 \
-                        -e MONGO_URI \
-                        -e AWS_REGION=ap-southeast-2 \
-                        -e AWS_ACCESS_KEY_ID \
-                        -e AWS_SECRET_ACCESS_KEY \
-                        -e AWS_S3_BUCKET_NAME \
-                        -e JWT_SECRET \
-                        -e JWT_ACCESS_EXPIRY=15m \
-                        -e JWT_REFRESH_EXPIRY=7d \
-                        -e JWT_ISSUER=recruitflow-ai \
-                        -e CORS_ORIGIN=http://13.211.245.10:5173 \
-                        ${DOCKER_IMAGE_BACKEND}:latest
-
-                    docker run -d --name recruitflow-frontend \
-                        -p 5173:80 \
-                        ${DOCKER_IMAGE_FRONTEND}:latest
-                """
-            }
-        }
-
-        stage('Deploy to EKS Cluster') {
             steps {
                 dir('infra/k8s') {
                     script {
@@ -148,7 +154,7 @@ pipeline {
                             aws sts get-caller-identity
 
                             echo "Configuring kubectl for EKS cluster..."
-                            aws eks update-kubeconfig --region ap-southeast-2 --name recruitflow-production-eks
+                            aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
 
                             
                             echo "Replacing image placeholders..."
@@ -163,11 +169,11 @@ pipeline {
                             kubectl apply -f frontend-service.yaml
                             kubectl apply -f configmap.yaml
 
-                            echo "Verifying deployment..."
-                            kubectl get pods
-                            kubectl get svc
-                        '''
-                    }
+                        kubectl rollout status deployment/recruitflow-backend --timeout=180s
+                        kubectl rollout status deployment/recruitflow-frontend --timeout=180s
+                        kubectl get pods
+                        kubectl get svc
+                    '''
                 }
             }
         }

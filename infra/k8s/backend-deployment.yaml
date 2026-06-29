@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: recruitflow-backend
+  namespace: recruitflow
   labels:
     app: recruitflow-backend
 spec:
@@ -16,7 +17,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: dracoo23/recruitflow-backend:latest
+          image: BACKEND_IMAGE_PLACEHOLDER
           imagePullPolicy: Always
 
           ports:
@@ -48,6 +49,9 @@ spec:
           volumeMounts:
             - name: uploads
               mountPath: /app/uploads
+      # WARNING: emptyDir is not shared across replicas.
+      # For multi-replica production, migrate to S3 (already in deps)
+      # or use a PersistentVolumeClaim + EBS CSI driver.
       volumes:
         - name: uploads
           emptyDir: {}

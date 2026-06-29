@@ -17,4 +17,6 @@
 .terraform/
 *.tfstate
 *.tfstate.*
-EOF
+
+# Kubernetes rendered manifests
+infra/k8s/*.rendered.yaml
