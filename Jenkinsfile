@@ -141,15 +141,17 @@ pipeline {
         }
 
         stage('Deploy to EKS') {
-            environment {
-                MONGO_URI = credentials('mongo-uri')
-                JWT_SECRET = credentials('jwt-secret')
-                AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket')
-            }
             steps {
                 dir('infra/k8s') {
                     script {
-                        sh '''
+                        def MONGO_URI = ''
+                        def JWT_SECRET = ''
+                        def AWS_S3_BUCKET_NAME = ''
+                        try { MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found' }
+                        try { JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found' }
+                        try { AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found' }
+
+                        sh """
                             set -e
                             . ../image.env
 
@@ -160,18 +162,18 @@ pipeline {
                             aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
 
                             echo "Replacing image placeholders..."
-                            sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${BACKEND_IMAGE}|g" backend-deployment.yaml
-                            sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${FRONTEND_IMAGE}|g" frontend-deployment.yaml
+                            sed -i "s|BACKEND_IMAGE_PLACEHOLDER|\${BACKEND_IMAGE}|g" backend-deployment.yaml
+                            sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|\${FRONTEND_IMAGE}|g" frontend-deployment.yaml
 
                             echo "Applying ConfigMap..."
                             kubectl apply -f configmap.yaml
 
                             echo "Creating/updating K8s secrets from Jenkins credentials..."
-                            kubectl create secret generic recruitflow-secrets \
-                                --namespace recruitflow \
-                                --from-literal=MONGO_URI="${MONGO_URI}" \
-                                --from-literal=JWT_SECRET="${JWT_SECRET}" \
-                                --from-literal=AWS_S3_BUCKET_NAME="${AWS_S3_BUCKET_NAME}" \
+                            kubectl create secret generic recruitflow-secrets \\
+                                --namespace recruitflow \\
+                                --from-literal=MONGO_URI='${MONGO_URI}' \\
+                                --from-literal=JWT_SECRET='${JWT_SECRET}' \\
+                                --from-literal=AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}' \\
                                 --dry-run=client -o yaml | kubectl apply -f -
 
                             echo "Deploying application to EKS..."
@@ -184,7 +186,7 @@ pipeline {
                             kubectl rollout status deployment/recruitflow-frontend --timeout=180s
                             kubectl get pods
                             kubectl get svc
-                        '''
+                        """
                     }
                 }
             }
