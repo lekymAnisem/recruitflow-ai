@@ -150,17 +150,18 @@ pipeline {
                 dir('infra/k8s') {
                     script {
                         sh '''
+                            set -e
+                            . ../image.env
+
                             echo "Verifying AWS credentials..."
                             aws sts get-caller-identity
 
                             echo "Configuring kubectl for EKS cluster..."
                             aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
 
-                            
                             echo "Replacing image placeholders..."
-                            sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${DOCKER_IMAGE_BACKEND}:latest|g" backend-deployment.yaml
-                            sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${DOCKER_IMAGE_FRONTEND}:latest|g" frontend-deployment.yaml
-
+                            sed -i "s|BACKEND_IMAGE_PLACEHOLDER|${BACKEND_IMAGE}|g" backend-deployment.yaml
+                            sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|${FRONTEND_IMAGE}|g" frontend-deployment.yaml
 
                             echo "Deploying application to EKS..."
                             kubectl apply -f backend-deployment.yaml
@@ -169,11 +170,12 @@ pipeline {
                             kubectl apply -f frontend-service.yaml
                             kubectl apply -f configmap.yaml
 
-                        kubectl rollout status deployment/recruitflow-backend --timeout=180s
-                        kubectl rollout status deployment/recruitflow-frontend --timeout=180s
-                        kubectl get pods
-                        kubectl get svc
-                    '''
+                            kubectl rollout status deployment/recruitflow-backend --timeout=180s
+                            kubectl rollout status deployment/recruitflow-frontend --timeout=180s
+                            kubectl get pods
+                            kubectl get svc
+                        '''
+                    }
                 }
             }
         }
