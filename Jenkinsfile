@@ -140,6 +140,60 @@ pipeline {
             }
         }
 
+        stage('Run Containers (CI/CD Server)') {
+            steps {
+                script {
+                    def MONGO_URI = ''
+                    def JWT_SECRET = ''
+                    def AWS_S3_BUCKET_NAME = ''
+                    try { MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found' }
+                    try { JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found' }
+                    try { AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found' }
+
+                    sh """
+                        set -e
+                        . "${WORKSPACE}/image.env"
+
+                        echo "Creating Docker network..."
+                        docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
+
+                        echo "Stopping old containers..."
+                        docker rm -f backend recruitflow-frontend 2>/dev/null || true
+
+                        echo "Running backend container (named 'backend' for DNS) on port 5000..."
+                        docker run -d \\
+                            --name backend \\
+                            --network recruitflow-net \\
+                            --restart unless-stopped \\
+                            -p 5000:5000 \\
+                            -e NODE_ENV=production \\
+                            -e PORT=5000 \\
+                            -e MONGO_URI='${MONGO_URI}' \\
+                            -e JWT_SECRET='${JWT_SECRET}' \\
+                            -e AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}' \\
+                            "\${BACKEND_IMAGE}"
+
+                        echo "Running frontend container (nginx on 80 -> host 5173)..."
+                        docker run -d \\
+                            --name recruitflow-frontend \\
+                            --network recruitflow-net \\
+                            --restart unless-stopped \\
+                            -p 5173:80 \\
+                            "\${FRONTEND_IMAGE}"
+
+                        echo ""
+                        echo "============================================"
+                        echo "Containers are running!"
+                        echo "Frontend: http://52.63.77.5:5173"
+                        echo "Backend:  http://52.63.77.5:5000"
+                        echo "============================================"
+                        echo ""
+                        docker ps --filter "name=backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+                    """
+                }
+            }
+        }
+
         stage('Deploy to EKS') {
             steps {
                 dir('infra/k8s') {
