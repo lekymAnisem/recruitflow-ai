@@ -117,7 +117,7 @@ pipeline {
                     aws ecr get-login-password --region "${AWS_REGION}" | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
                     docker build -t "${BACKEND_IMAGE}" -t "${ECR_REGISTRY}/${BACKEND_REPO}:latest" backend
-                    docker build -t "${FRONTEND_IMAGE}" -t "${ECR_REGISTRY}/${FRONTEND_REPO}:latest" frontend
+                    docker build -t "${FRONTEND_IMAGE}" -t "${ECR_REGISTRY}/${FRONTEND_REPO}:latest" --build-arg VITE_API_URL=/api frontend
 
                     docker push "${BACKEND_IMAGE}"
                     docker push "${ECR_REGISTRY}/${BACKEND_REPO}:latest"
