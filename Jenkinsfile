@@ -188,8 +188,23 @@ pipeline {
                             kubectl apply -f frontend-deployment.yaml
                             kubectl apply -f frontend-service.yaml
 
-                            kubectl rollout status deployment/recruitflow-backend -n recruitflow --timeout=180s
-                            kubectl rollout status deployment/recruitflow-frontend -n recruitflow --timeout=180s
+                            echo "Waiting for backend rollout (up to 5 mins)..."
+                            kubectl rollout status deployment/recruitflow-backend -n recruitflow --timeout=300s || \
+                                { echo "=== Backend pod details ===" && \
+                                  kubectl get pods -n recruitflow -l app=recruitflow-backend && \
+                                  kubectl describe pods -n recruitflow -l app=recruitflow-backend | tail -40 && \
+                                  kubectl logs -n recruitflow -l app=recruitflow-backend --tail=30 && \
+                                  exit 1; }
+
+                            echo "Waiting for frontend rollout (up to 5 mins)..."
+                            kubectl rollout status deployment/recruitflow-frontend -n recruitflow --timeout=300s || \
+                                { echo "=== Frontend pod details ===" && \
+                                  kubectl get pods -n recruitflow -l app=recruitflow-frontend && \
+                                  kubectl describe pods -n recruitflow -l app=recruitflow-frontend | tail -40 && \
+                                  kubectl logs -n recruitflow -l app=recruitflow-frontend --tail=30 && \
+                                  exit 1; }
+
+                            echo "=== Final pod and service status ==="
                             kubectl get pods -n recruitflow
                             kubectl get svc -n recruitflow
                         """
