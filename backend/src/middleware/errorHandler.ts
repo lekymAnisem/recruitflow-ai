@@ -23,8 +23,9 @@ export function errorHandler(
     message = 'Invalid JSON in request body';
   }
 
-  if (config.nodeEnv === 'development') {
-    console.error('Error:', err);
+  console.error(`[${config.nodeEnv}] ${statusCode} ${err.name}: ${err.message}`);
+  if (err.stack) {
+    console.error(err.stack.split('\n').slice(0, 4).join('\n'));
   }
 
   const response: Record<string, unknown> = {
