@@ -433,6 +433,19 @@ resource "aws_eks_cluster" "main" {
   tags = merge(local.common_tags, { Name = "${local.name_prefix}-eks" })
 }
 
+# Allow CI/CD server to reach EKS API endpoint via private endpoint on port 443
+resource "aws_security_group_rule" "eks_api_from_cicd" {
+  count = var.eks_enabled ? 1 : 0
+
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  security_group_id        = aws_eks_cluster.main[0].vpc_config[0].cluster_security_group_id
+  source_security_group_id = aws_security_group.cicd.id
+  description              = "Allow CI/CD server to reach EKS API endpoint"
+}
+
 resource "aws_eks_node_group" "main" {
   count = var.eks_enabled ? 1 : 0
 
