@@ -185,10 +185,10 @@ pipeline {
                             kubectl apply -f frontend-deployment.yaml
                             kubectl apply -f frontend-service.yaml
 
-                            kubectl rollout status deployment/recruitflow-backend --timeout=180s
-                            kubectl rollout status deployment/recruitflow-frontend --timeout=180s
-                            kubectl get pods
-                            kubectl get svc
+                            kubectl rollout status deployment/recruitflow-backend -n recruitflow --timeout=180s
+                            kubectl rollout status deployment/recruitflow-frontend -n recruitflow --timeout=180s
+                            kubectl get pods -n recruitflow
+                            kubectl get svc -n recruitflow
                         """
                     }
                 }
