@@ -140,168 +140,114 @@ pipeline {
             }
         }
 
-        stage('Run Containers (CI/CD Server)') {
+        stage('Local Docker Run') {
             steps {
-                script {
-                    def CRED_MONGO_URI = ''
-                    def CRED_JWT_SECRET = ''
-                    def CRED_AWS_S3_BUCKET = ''
-                    try { CRED_MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found, using default' }
-                    try { CRED_JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found, using default' }
-                    try { CRED_AWS_S3_BUCKET = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found, using default' }
+                sh """
+                    set -e
+                    . "${WORKSPACE}/image.env"
 
-                    sh """
-                        set -e
-                        . "${WORKSPACE}/image.env"
+                    echo "--- Creating Docker network ---"
+                    docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
 
-                        echo "Creating Docker network..."
-                        docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
+                    echo "--- Stopping old containers ---"
+                    docker rm -f mongo backend recruitflow-frontend 2>/dev/null || true
 
-                        echo "Stopping old containers..."
-                        docker rm -f mongo backend recruitflow-frontend 2>/dev/null || true
+                    echo "--- Starting MongoDB ---"
+                    docker run -d --name mongo --network recruitflow-net -p 27017:27017 mongo:7
 
-                        echo "Running MongoDB container..."
-                        docker run -d \\
-                            --name mongo \\
-                            --network recruitflow-net \\
-                            --restart unless-stopped \\
-                            -p 27017:27017 \\
-                            mongo:7
+                    MONGO_URI="mongodb://mongo:27017/recruitflow"
+                    JWT_SECRET="local-dev-jwt-secret"
+                    AWS_S3_BUCKET_NAME=""
 
-                        MONGO_URI='${CRED_MONGO_URI}'
-                        case "\$MONGO_URI" in
-                            mongodb://*|mongodb+srv://*)
-                                echo "Using credential MONGO_URI"
-                                ;;
-                            *)
-                                MONGO_URI="mongodb://mongo:27017/recruitflow"
-                                echo "Using local MongoDB container at \$MONGO_URI"
-                                ;;
-                        esac
+                    echo "--- Starting backend ---"
+                    docker run -d --name backend --network recruitflow-net -p 5000:5000 \\
+                        -e NODE_ENV=production \\
+                        -e PORT=5000 \\
+                        -e MONGO_URI="\${MONGO_URI}" \\
+                        -e JWT_SECRET="\${JWT_SECRET}" \\
+                        "\${BACKEND_IMAGE}"
 
-                        JWT_SECRET='${CRED_JWT_SECRET}'
-                        [ -z "\$JWT_SECRET" ] && JWT_SECRET="local-dev-jwt-secret-do-not-use-in-prod"
+                    echo "--- Starting frontend ---"
+                    docker run -d --name recruitflow-frontend --network recruitflow-net -p 5173:80 \\
+                        "\${FRONTEND_IMAGE}"
 
-                        AWS_S3_BUCKET_NAME='${CRED_AWS_S3_BUCKET}'
-                        [ -z "\$AWS_S3_BUCKET_NAME" ] && AWS_S3_BUCKET_NAME=""
-
-                        echo "Running backend container (named 'backend' for DNS) on port 5000..."
-                        docker run -d \\
-                            --name backend \\
-                            --network recruitflow-net \\
-                            --restart unless-stopped \\
-                            -p 5000:5000 \\
-                            -e NODE_ENV=production \\
-                            -e PORT=5000 \\
-                            -e MONGO_URI="\${MONGO_URI}" \\
-                            -e JWT_SECRET="\${JWT_SECRET}" \\
-                            -e AWS_S3_BUCKET_NAME="\${AWS_S3_BUCKET_NAME}" \\
-                            "\${BACKEND_IMAGE}"
-
-                        echo "Running frontend container (nginx on 80 -> host 5173)..."
-                        docker run -d \\
-                            --name recruitflow-frontend \\
-                            --network recruitflow-net \\
-                            --restart unless-stopped \\
-                            -p 5173:80 \\
-                            "\${FRONTEND_IMAGE}"
-
-                        echo ""
-                        echo "============================================"
-                        echo "Containers are running!"
-                        echo "Frontend: http://52.63.77.5:5173"
-                        echo "Backend:  http://52.63.77.5:5000"
-                        echo "MongoDB:  localhost:27017"
-                        echo "============================================"
-                        echo ""
-                        docker ps --filter "name=mongo|backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
-                    """
-                }
+                    echo ""
+                    echo "============================================"
+                    echo "Containers are running!"
+                    echo "Frontend: http://52.63.77.5:5173"
+                    echo "Backend:  http://52.63.77.5:5000"
+                    echo "MongoDB:  localhost:27017"
+                    echo "============================================"
+                    docker ps --filter "name=mongo|backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+                """
             }
         }
 
         stage('Deploy to EKS') {
             steps {
                 dir('infra/k8s') {
-                    script {
-                        def CRED_MONGO_URI = ''
-                        def CRED_JWT_SECRET = ''
-                        def CRED_AWS_S3_BUCKET = ''
-                        try { CRED_MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found' }
-                        try { CRED_JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found' }
-                        try { CRED_AWS_S3_BUCKET = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found' }
+                    withCredentials([string(credentialsId: 'mongo-uri', variable: 'MONGO_URI')]) {
+                        withCredentials([string(credentialsId: 'jwt-secret', variable: 'JWT_SECRET')]) {
+                            withCredentials([string(credentialsId: 'aws-s3-bucket', variable: 'AWS_S3_BUCKET_NAME')]) {
+                                sh """
+                                    set -e
+                                    . "${WORKSPACE}/image.env"
 
-                        sh """
-                            set -e
-                            . "${WORKSPACE}/image.env"
+                                    echo "Verifying AWS credentials..."
+                                    aws sts get-caller-identity
 
-                            echo "Verifying AWS credentials..."
-                            aws sts get-caller-identity
+                                    echo "Configuring kubectl for EKS cluster..."
+                                    aws eks update-kubeconfig --region ap-southeast-2 --name ${env.EKS_CLUSTER_NAME}
 
-                            echo "Configuring kubectl for EKS cluster..."
-                            aws eks update-kubeconfig --region ap-southeast-2 --name ${env.EKS_CLUSTER_NAME}
+                                    echo "Replacing image placeholders..."
+                                    sed -i "s|BACKEND_IMAGE_PLACEHOLDER|\${BACKEND_IMAGE}|g" backend-deployment.yaml
+                                    sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|\${FRONTEND_IMAGE}|g" frontend-deployment.yaml
 
-                            echo "Replacing image placeholders..."
-                            sed -i "s|BACKEND_IMAGE_PLACEHOLDER|\${BACKEND_IMAGE}|g" backend-deployment.yaml
-                            sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|\${FRONTEND_IMAGE}|g" frontend-deployment.yaml
+                                    echo "Creating namespace 'recruitflow'..."
+                                    kubectl create namespace recruitflow --dry-run=client -o yaml | kubectl apply -f -
 
-                            echo "Creating namespace 'recruitflow'..."
-                            kubectl create namespace recruitflow --dry-run=client -o yaml | kubectl apply -f -
+                                    echo "Setting kubectl namespace context to 'recruitflow'..."
+                                    kubectl config set-context --current --namespace=recruitflow
 
-                            echo "Setting kubectl namespace context to 'recruitflow'..."
-                            kubectl config set-context --current --namespace=recruitflow
+                                    echo "Applying ConfigMap..."
+                                    kubectl apply -f configmap.yaml
 
-                            echo "Applying ConfigMap..."
-                            kubectl apply -f configmap.yaml
+                                    echo "Creating/updating K8s secrets from Jenkins credentials..."
+                                    kubectl create secret generic recruitflow-secrets \\
+                                        --namespace recruitflow \\
+                                        --from-literal=MONGO_URI='${MONGO_URI}' \\
+                                        --from-literal=JWT_SECRET='${JWT_SECRET}' \\
+                                        --from-literal=AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}' \\
+                                        --dry-run=client -o yaml | kubectl apply -f -
 
-                            MONGO_URI='${CRED_MONGO_URI}'
-                            case "\$MONGO_URI" in
-                                mongodb://*|mongodb+srv://*)
-                                    echo "Using credential MONGO_URI"
-                                    ;;
-                                *)
-                                    echo "MONGO_URI missing or invalid; using default fallback"
-                                    MONGO_URI="mongodb://localhost:27017/recruitflow"
-                                    ;;
-                            esac
+                                    echo "Deploying application to EKS..."
+                                    kubectl apply -f backend-deployment.yaml
+                                    kubectl apply -f backend-service.yaml
+                                    kubectl apply -f frontend-deployment.yaml
+                                    kubectl apply -f frontend-service.yaml
 
-                            JWT_SECRET='${CRED_JWT_SECRET}'
-                            [ -z "\$JWT_SECRET" ] && JWT_SECRET="default-jwt-secret"
+                                    echo "Waiting for backend rollout (up to 5 mins)..."
+                                    kubectl rollout status deployment/recruitflow-backend -n recruitflow --timeout=300s || \\
+                                        { echo "=== Backend pod details ===" && \\
+                                          kubectl get pods -n recruitflow -l app=recruitflow-backend && \\
+                                          kubectl describe pods -n recruitflow -l app=recruitflow-backend | tail -40 && \\
+                                          kubectl logs -n recruitflow -l app=recruitflow-backend --tail=30 && \\
+                                          exit 1; }
 
-                            echo "Creating/updating K8s secrets from Jenkins credentials..."
-                            kubectl create secret generic recruitflow-secrets \\
-                                --namespace recruitflow \\
-                                --from-literal=MONGO_URI="\${MONGO_URI}" \\
-                                --from-literal=JWT_SECRET="\${JWT_SECRET}" \\
-                                --from-literal=AWS_S3_BUCKET_NAME='${CRED_AWS_S3_BUCKET}' \\
-                                --dry-run=client -o yaml | kubectl apply -f -
+                                    echo "Waiting for frontend rollout (up to 5 mins)..."
+                                    kubectl rollout status deployment/recruitflow-frontend -n recruitflow --timeout=300s || \\
+                                        { echo "=== Frontend pod details ===" && \\
+                                          kubectl get pods -n recruitflow -l app=recruitflow-frontend && \\
+                                          kubectl describe pods -n recruitflow -l app=recruitflow-frontend | tail -40 && \\
+                                          kubectl logs -n recruitflow -l app=recruitflow-frontend --tail=30 && \\
+                                          exit 1; }
 
-                            echo "Deploying application to EKS..."
-                            kubectl apply -f backend-deployment.yaml
-                            kubectl apply -f backend-service.yaml
-                            kubectl apply -f frontend-deployment.yaml
-                            kubectl apply -f frontend-service.yaml
-
-                            echo "Waiting for backend rollout (up to 5 mins)..."
-                            kubectl rollout status deployment/recruitflow-backend -n recruitflow --timeout=300s || \
-                                { echo "=== Backend pod details ===" && \
-                                  kubectl get pods -n recruitflow -l app=recruitflow-backend && \
-                                  kubectl describe pods -n recruitflow -l app=recruitflow-backend | tail -40 && \
-                                  kubectl logs -n recruitflow -l app=recruitflow-backend --tail=30 && \
-                                  exit 1; }
-
-                            echo "Waiting for frontend rollout (up to 5 mins)..."
-                            kubectl rollout status deployment/recruitflow-frontend -n recruitflow --timeout=300s || \
-                                { echo "=== Frontend pod details ===" && \
-                                  kubectl get pods -n recruitflow -l app=recruitflow-frontend && \
-                                  kubectl describe pods -n recruitflow -l app=recruitflow-frontend | tail -40 && \
-                                  kubectl logs -n recruitflow -l app=recruitflow-frontend --tail=30 && \
-                                  exit 1; }
-
-                            echo "=== Final pod and service status ==="
-                            kubectl get pods -n recruitflow
-                            kubectl get svc -n recruitflow
-                        """
+                                    echo "=== Final pod and service status ==="
+                                    kubectl get pods -n recruitflow
+                                    kubectl get svc -n recruitflow
+                                """
+                            }
+                        }
                     }
                 }
             }
