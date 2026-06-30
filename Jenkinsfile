@@ -143,12 +143,12 @@ pipeline {
         stage('Run Containers (CI/CD Server)') {
             steps {
                 script {
-                    def MONGO_URI = ''
-                    def JWT_SECRET = ''
-                    def AWS_S3_BUCKET_NAME = ''
-                    try { MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found' }
-                    try { JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found' }
-                    try { AWS_S3_BUCKET_NAME = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found' }
+                    def CRED_MONGO_URI = ''
+                    def CRED_JWT_SECRET = ''
+                    def CRED_AWS_S3_BUCKET = ''
+                    try { CRED_MONGO_URI = credentials('mongo-uri') } catch (e) { echo 'Warning: mongo-uri credential not found, using default' }
+                    try { CRED_JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found, using default' }
+                    try { CRED_AWS_S3_BUCKET = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found, using default' }
 
                     sh """
                         set -e
@@ -158,7 +158,27 @@ pipeline {
                         docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
 
                         echo "Stopping old containers..."
-                        docker rm -f backend recruitflow-frontend 2>/dev/null || true
+                        docker rm -f mongo backend recruitflow-frontend 2>/dev/null || true
+
+                        echo "Running MongoDB container..."
+                        docker run -d \\
+                            --name mongo \\
+                            --network recruitflow-net \\
+                            --restart unless-stopped \\
+                            -p 27017:27017 \\
+                            mongo:7
+
+                        MONGO_URI="${CRED_MONGO_URI}"
+                        if [ -z "\$MONGO_URI" ] || echo "\$MONGO_URI" | grep -qv "^mongodb"; then
+                            MONGO_URI="mongodb://mongo:27017/recruitflow"
+                            echo "Using local MongoDB container at \$MONGO_URI"
+                        fi
+
+                        JWT_SECRET="${CRED_JWT_SECRET}"
+                        [ -z "\$JWT_SECRET" ] && JWT_SECRET="local-dev-jwt-secret-do-not-use-in-prod"
+
+                        AWS_S3_BUCKET_NAME="${CRED_AWS_S3_BUCKET}"
+                        [ -z "\$AWS_S3_BUCKET_NAME" ] && AWS_S3_BUCKET_NAME=""
 
                         echo "Running backend container (named 'backend' for DNS) on port 5000..."
                         docker run -d \\
@@ -168,9 +188,9 @@ pipeline {
                             -p 5000:5000 \\
                             -e NODE_ENV=production \\
                             -e PORT=5000 \\
-                            -e MONGO_URI='${MONGO_URI}' \\
-                            -e JWT_SECRET='${JWT_SECRET}' \\
-                            -e AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}' \\
+                            -e MONGO_URI="\${MONGO_URI}" \\
+                            -e JWT_SECRET="\${JWT_SECRET}" \\
+                            -e AWS_S3_BUCKET_NAME="\${AWS_S3_BUCKET_NAME}" \\
                             "\${BACKEND_IMAGE}"
 
                         echo "Running frontend container (nginx on 80 -> host 5173)..."
@@ -186,9 +206,10 @@ pipeline {
                         echo "Containers are running!"
                         echo "Frontend: http://52.63.77.5:5173"
                         echo "Backend:  http://52.63.77.5:5000"
+                        echo "MongoDB:  localhost:27017"
                         echo "============================================"
                         echo ""
-                        docker ps --filter "name=backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+                        docker ps --filter "name=mongo|backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
                     """
                 }
             }
@@ -228,12 +249,22 @@ pipeline {
                             echo "Applying ConfigMap..."
                             kubectl apply -f configmap.yaml
 
+                            MONGO_URI='${MONGO_URI}'
+                            JWT_SECRET='${JWT_SECRET}'
+                            AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}'
+
+                            if [ -z "\$MONGO_URI" ] || ! echo "\$MONGO_URI" | grep -q '^mongodb'; then
+                                echo "MONGO_URI missing or invalid; using default fallback"
+                                MONGO_URI="mongodb://localhost:27017/recruitflow"
+                            fi
+                            [ -z "\$JWT_SECRET" ] && JWT_SECRET="default-jwt-secret"
+
                             echo "Creating/updating K8s secrets from Jenkins credentials..."
                             kubectl create secret generic recruitflow-secrets \\
                                 --namespace recruitflow \\
-                                --from-literal=MONGO_URI='${MONGO_URI}' \\
-                                --from-literal=JWT_SECRET='${JWT_SECRET}' \\
-                                --from-literal=AWS_S3_BUCKET_NAME='${AWS_S3_BUCKET_NAME}' \\
+                                --from-literal=MONGO_URI="\${MONGO_URI}" \\
+                                --from-literal=JWT_SECRET="\${JWT_SECRET}" \\
+                                --from-literal=AWS_S3_BUCKET_NAME="\${AWS_S3_BUCKET_NAME}" \\
                                 --dry-run=client -o yaml | kubectl apply -f -
 
                             echo "Deploying application to EKS..."
