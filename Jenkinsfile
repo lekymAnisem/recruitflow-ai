@@ -153,13 +153,13 @@ pipeline {
 
                         sh """
                             set -e
-                            . ../image.env
+                            . "${WORKSPACE}/image.env"
 
                             echo "Verifying AWS credentials..."
                             aws sts get-caller-identity
 
                             echo "Configuring kubectl for EKS cluster..."
-                            aws eks update-kubeconfig --region ap-southeast-2 --name Cloudaseem
+                            aws eks update-kubeconfig --region ap-southeast-2 --name ${env.EKS_CLUSTER_NAME}
 
                             echo "Replacing image placeholders..."
                             sed -i "s|BACKEND_IMAGE_PLACEHOLDER|\${BACKEND_IMAGE}|g" backend-deployment.yaml
