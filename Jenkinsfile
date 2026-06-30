@@ -150,7 +150,7 @@ pipeline {
                     docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
 
                     echo "--- Stopping old containers ---"
-                    docker rm -f mongo backend recruitflow-frontend 2>/dev/null || true
+                    docker rm -f mongo recruitflow-backend recruitflow-frontend 2>/dev/null || true
 
                     echo "--- Starting MongoDB ---"
                     docker run -d --name mongo --network recruitflow-net -p 27017:27017 mongo:7
@@ -160,7 +160,7 @@ pipeline {
                     AWS_S3_BUCKET_NAME=""
 
                     echo "--- Starting backend ---"
-                    docker run -d --name backend --network recruitflow-net -p 5000:5000 \\
+                    docker run -d --name recruitflow-backend --network recruitflow-net -p 5000:5000 \\
                         -e NODE_ENV=production \\
                         -e PORT=5000 \\
                         -e MONGO_URI="\${MONGO_URI}" \\
@@ -178,7 +178,7 @@ pipeline {
                     echo "Backend:  http://52.63.77.5:5000"
                     echo "MongoDB:  localhost:27017"
                     echo "============================================"
-                    docker ps --filter "name=mongo|backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+                    docker ps --filter "name=mongo|recruitflow-backend|recruitflow-frontend" --format "table {{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
                 """
             }
         }
