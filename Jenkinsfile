@@ -168,6 +168,9 @@ pipeline {
                             echo "Creating namespace 'recruitflow'..."
                             kubectl create namespace recruitflow --dry-run=client -o yaml | kubectl apply -f -
 
+                            echo "Setting kubectl namespace context to 'recruitflow'..."
+                            kubectl config set-context --current --namespace=recruitflow
+
                             echo "Applying ConfigMap..."
                             kubectl apply -f configmap.yaml
 
