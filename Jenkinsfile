@@ -165,6 +165,9 @@ pipeline {
                             sed -i "s|BACKEND_IMAGE_PLACEHOLDER|\${BACKEND_IMAGE}|g" backend-deployment.yaml
                             sed -i "s|FRONTEND_IMAGE_PLACEHOLDER|\${FRONTEND_IMAGE}|g" frontend-deployment.yaml
 
+                            echo "Creating namespace 'recruitflow'..."
+                            kubectl create namespace recruitflow --dry-run=client -o yaml | kubectl apply -f -
+
                             echo "Applying ConfigMap..."
                             kubectl apply -f configmap.yaml
 
