@@ -3,10 +3,15 @@ kind: Service
 metadata:
   name: recruitflow-backend
   namespace: recruitflow
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "5000"
 spec:
   type: LoadBalancer
   selector:
     app: recruitflow-backend
   ports:
-    - port: 5000
-      targetPort: 5000
+    - name: http
+      port: 5000
+      targetPort: http

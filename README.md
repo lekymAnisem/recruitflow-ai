@@ -173,6 +173,37 @@ docker exec -it recruitflow-backend npm run seed
 
 ---
 
+## Backend Monitoring
+
+The backend exposes Prometheus metrics at:
+
+```text
+GET /metrics
+```
+
+Metrics include Node.js process/default metrics plus HTTP request totals, in-flight requests, status codes, route labels, and latency histograms.
+
+Kubernetes monitoring is enabled through the backend Service and Pod annotations in `infra/k8s/backend-service.yaml` and `infra/k8s/backend-deployment.yaml`:
+
+```yaml
+prometheus.io/scrape: "true"
+prometheus.io/path: "/metrics"
+prometheus.io/port: "5000"
+```
+
+If your existing Prometheus already scrapes annotated Kubernetes pods or services, the backend will appear automatically after the Jenkins deploy. If it does not, add a Kubernetes service discovery scrape job that keeps targets with `prometheus.io/scrape=true`.
+
+Grafana and alerts:
+
+- Dashboard: `infra/grafana/dashboards/recruitflow-backend.json`
+- Prometheus alert rules: `infra/prometheus/recruitflow-backend-alerts.yaml`
+
+Logs:
+
+The backend writes logs to stdout/stderr, so an existing Loki + Promtail Kubernetes setup can collect them from the `recruitflow-backend` pods using the `app=recruitflow-backend` label.
+
+---
+
 ## API Overview
 
 ### Authentication

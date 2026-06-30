@@ -8,6 +8,7 @@ import path from 'path';
 
 import { config } from './config';
 import { errorHandler } from './middleware/errorHandler';
+import { metricsHandler, metricsMiddleware } from './middleware/metrics';
 import authRoutes from './modules/auth/auth.routes';
 import usersRoutes from './modules/users/users.routes';
 import organizationsRoutes from './modules/organizations/organizations.routes';
@@ -39,6 +40,7 @@ app.use(
 app.use(cookieParser());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+app.use(metricsMiddleware);
 
 const uploadsPath = path.resolve(__dirname, '..', config.uploadDir);
 app.use('/uploads', express.static(uploadsPath));
@@ -46,6 +48,8 @@ app.use('/uploads', express.static(uploadsPath));
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'OK' });
 });
+
+app.get('/metrics', metricsHandler);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);

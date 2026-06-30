@@ -14,6 +14,10 @@ spec:
     metadata:
       labels:
         app: recruitflow-backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "5000"
     spec:
       containers:
         - name: backend
@@ -21,7 +25,8 @@ spec:
           imagePullPolicy: Always
 
           ports:
-            - containerPort: 5000
+            - name: http
+              containerPort: 5000
           envFrom:
             - configMapRef:
                 name: recruitflow-config
