@@ -150,7 +150,7 @@ pipeline {
                     docker network inspect recruitflow-net >/dev/null 2>&1 || docker network create recruitflow-net
 
                     echo "--- Stopping old containers ---"
-                    docker rm -f mongo recruitflow-backend recruitflow-frontend 2>/dev/null || true
+                    docker rm -f mongo recruitflow-backend backend recruitflow-frontend 2>/dev/null || true
 
                     echo "--- Starting MongoDB ---"
                     docker run -d --name mongo --network recruitflow-net -p 27017:27017 mongo:7
