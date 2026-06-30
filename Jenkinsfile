@@ -150,14 +150,6 @@ pipeline {
                     try { CRED_JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found, using default' }
                     try { CRED_AWS_S3_BUCKET = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found, using default' }
 
-                    def MONGO_URI = CRED_MONGO_URI
-                    if (!MONGO_URI || !(MONGO_URI.startsWith('mongodb://') || MONGO_URI.startsWith('mongodb+srv://'))) {
-                        MONGO_URI = 'mongodb://mongo:27017/recruitflow'
-                        echo "Using local MongoDB container at ${MONGO_URI}"
-                    }
-
-                    def JWT_SECRET = CRED_JWT_SECRET ?: 'local-dev-jwt-secret-do-not-use-in-prod'
-
                     sh """
                         set -e
                         . "${WORKSPACE}/image.env"
@@ -176,6 +168,23 @@ pipeline {
                             -p 27017:27017 \\
                             mongo:7
 
+                        MONGO_URI='${CRED_MONGO_URI}'
+                        case "\$MONGO_URI" in
+                            mongodb://*|mongodb+srv://*)
+                                echo "Using credential MONGO_URI"
+                                ;;
+                            *)
+                                MONGO_URI="mongodb://mongo:27017/recruitflow"
+                                echo "Using local MongoDB container at \$MONGO_URI"
+                                ;;
+                        esac
+
+                        JWT_SECRET='${CRED_JWT_SECRET}'
+                        [ -z "\$JWT_SECRET" ] && JWT_SECRET="local-dev-jwt-secret-do-not-use-in-prod"
+
+                        AWS_S3_BUCKET_NAME='${CRED_AWS_S3_BUCKET}'
+                        [ -z "\$AWS_S3_BUCKET_NAME" ] && AWS_S3_BUCKET_NAME=""
+
                         echo "Running backend container (named 'backend' for DNS) on port 5000..."
                         docker run -d \\
                             --name backend \\
@@ -184,9 +193,9 @@ pipeline {
                             -p 5000:5000 \\
                             -e NODE_ENV=production \\
                             -e PORT=5000 \\
-                            -e MONGO_URI='${MONGO_URI}' \\
-                            -e JWT_SECRET='${JWT_SECRET}' \\
-                            -e AWS_S3_BUCKET_NAME='${CRED_AWS_S3_BUCKET}' \\
+                            -e MONGO_URI="\${MONGO_URI}" \\
+                            -e JWT_SECRET="\${JWT_SECRET}" \\
+                            -e AWS_S3_BUCKET_NAME="\${AWS_S3_BUCKET_NAME}" \\
                             "\${BACKEND_IMAGE}"
 
                         echo "Running frontend container (nginx on 80 -> host 5173)..."
@@ -222,14 +231,6 @@ pipeline {
                         try { CRED_JWT_SECRET = credentials('jwt-secret') } catch (e) { echo 'Warning: jwt-secret credential not found' }
                         try { CRED_AWS_S3_BUCKET = credentials('aws-s3-bucket') } catch (e) { echo 'Warning: aws-s3-bucket credential not found' }
 
-                        def MONGO_URI = CRED_MONGO_URI
-                        if (!MONGO_URI || !(MONGO_URI.startsWith('mongodb://') || MONGO_URI.startsWith('mongodb+srv://'))) {
-                            echo "MONGO_URI credential missing or invalid; using default fallback"
-                            MONGO_URI = 'mongodb://localhost:27017/recruitflow'
-                        }
-
-                        def JWT_SECRET = CRED_JWT_SECRET ?: 'default-jwt-secret'
-
                         sh """
                             set -e
                             . "${WORKSPACE}/image.env"
@@ -253,11 +254,25 @@ pipeline {
                             echo "Applying ConfigMap..."
                             kubectl apply -f configmap.yaml
 
+                            MONGO_URI='${CRED_MONGO_URI}'
+                            case "\$MONGO_URI" in
+                                mongodb://*|mongodb+srv://*)
+                                    echo "Using credential MONGO_URI"
+                                    ;;
+                                *)
+                                    echo "MONGO_URI missing or invalid; using default fallback"
+                                    MONGO_URI="mongodb://localhost:27017/recruitflow"
+                                    ;;
+                            esac
+
+                            JWT_SECRET='${CRED_JWT_SECRET}'
+                            [ -z "\$JWT_SECRET" ] && JWT_SECRET="default-jwt-secret"
+
                             echo "Creating/updating K8s secrets from Jenkins credentials..."
                             kubectl create secret generic recruitflow-secrets \\
                                 --namespace recruitflow \\
-                                --from-literal=MONGO_URI='${MONGO_URI}' \\
-                                --from-literal=JWT_SECRET='${JWT_SECRET}' \\
+                                --from-literal=MONGO_URI="\${MONGO_URI}" \\
+                                --from-literal=JWT_SECRET="\${JWT_SECRET}" \\
                                 --from-literal=AWS_S3_BUCKET_NAME='${CRED_AWS_S3_BUCKET}' \\
                                 --dry-run=client -o yaml | kubectl apply -f -
 
